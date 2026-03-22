@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Transcript Viewer</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2129;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --accent: #c9a0dc;
+    --user: #3b82f6;
+    --assistant: #c9a0dc;
+    --system: #f59e0b;
+    --tool-use: #10b981;
+    --tool-result: #06b6d4;
+    --error: #f87171;
+    --radius: 10px;
+    --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  /* ── Drop Zone ── */
+  #drop-zone {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 2rem;
+    transition: background 0.2s;
+  }
+  #drop-zone.drag-over { background: rgba(201,160,220,0.06); }
+  #drop-zone h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    background: linear-gradient(135deg, var(--accent), #7c8cf8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  #drop-zone p { color: var(--text-muted); margin-bottom: 1.5rem; }
+  .drop-area {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 4rem 3rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    max-width: 500px;
+    width: 100%;
+  }
+  .drop-area:hover, .drag-over .drop-area {
+    border-color: var(--accent);
+    background: rgba(201,160,220,0.04);
+  }
+  .drop-area svg { margin-bottom: 1rem; opacity: 0.5; }
+  .drop-area .label { font-size: 1.1rem; color: var(--text-muted); }
+  .drop-area .sub { font-size: 0.85rem; color: var(--text-muted); opacity: 0.6; margin-top: 0.5rem; }
+  #file-input { display: none; }
+
+  /* ── Viewer Layout ── */
+  #viewer { display: none; }
+  #toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0.6rem 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+  #toolbar .filename {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin-right: auto;
+  }
+  #toolbar .stat {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    background: var(--surface2);
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+  }
+  .filter-btn {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: var(--font-sans);
+  }
+  .filter-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(201,160,220,0.1); }
+  .filter-btn:hover { border-color: var(--text-muted); }
+  #btn-reset {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    font-family: var(--font-sans);
+  }
+  #btn-reset:hover { border-color: var(--error); color: var(--error); }
+
+  #messages {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 1.5rem 1rem 4rem;
+  }
+
+  /* ── Compaction Divider ── */
+  .compaction-divider {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin: 2rem 0;
+    color: var(--system);
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .compaction-divider::before, .compaction-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--system), transparent);
+  }
+  .compaction-divider .icon { font-size: 1rem; }
+
+  /* ── Message Blocks ── */
+  .message {
+    margin-bottom: 1rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    overflow: hidden;
+    transition: opacity 0.2s;
+  }
+  .message.hidden { display: none; }
+  .msg-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.6rem 1rem;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+  }
+  .msg-header:hover { background: rgba(255,255,255,0.03); }
+  .role-badge {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
+  }
+  .role-user .role-badge { background: rgba(59,130,246,0.15); color: var(--user); }
+  .role-assistant .role-badge { background: rgba(201,160,220,0.15); color: var(--assistant); }
+  .role-system .role-badge { background: rgba(245,158,11,0.15); color: var(--system); }
+  .msg-meta {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-left: auto;
+    display: flex;
+    gap: 0.8rem;
+    align-items: center;
+  }
+  .msg-meta .token-count { font-family: var(--font-mono); font-size: 0.7rem; }
+  .collapse-icon {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    transition: transform 0.2s;
+  }
+  .message.collapsed .collapse-icon { transform: rotate(-90deg); }
+  .msg-body { padding: 0; }
+  .message.collapsed .msg-body { display: none; }
+
+  /* ── Content Blocks ── */
+  .content-block { padding: 0.8rem 1rem; border-bottom: 1px solid rgba(48,54,61,0.5); }
+  .content-block:last-child { border-bottom: none; }
+
+  .block-label {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.4rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .block-text .block-label { color: var(--text-muted); }
+  .block-thinking .block-label { color: #a78bfa; }
+  .block-tool-use .block-label { color: var(--tool-use); }
+  .block-tool-result .block-label { color: var(--tool-result); }
+
+  .block-thinking {
+    background: rgba(167,139,250,0.04);
+    border-left: 3px solid rgba(167,139,250,0.3);
+  }
+  .block-tool-use {
+    background: rgba(16,185,129,0.04);
+    border-left: 3px solid rgba(16,185,129,0.3);
+  }
+  .block-tool-result {
+    background: rgba(6,182,212,0.04);
+    border-left: 3px solid rgba(6,182,212,0.3);
+  }
+  .block-error {
+    background: rgba(248,113,113,0.06);
+    border-left: 3px solid rgba(248,113,113,0.4);
+  }
+  .block-error .block-label { color: var(--error); }
+
+  .block-content {
+    font-size: 0.88rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--font-mono);
+    line-height: 1.65;
+    color: var(--text);
+    max-height: 600px;
+    overflow-y: auto;
+  }
+  .block-content.long { max-height: 300px; }
+  .block-content::-webkit-scrollbar { width: 6px; }
+  .block-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .tool-name {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: 0.85rem;
+  }
+  .tool-input {
+    margin-top: 0.4rem;
+    font-size: 0.82rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  .tool-input::-webkit-scrollbar { width: 6px; }
+  .tool-input::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* image/base64 blocks */
+  .image-block img {
+    max-width: 100%;
+    max-height: 400px;
+    border-radius: 6px;
+    margin-top: 0.4rem;
+  }
+  .base64-placeholder {
+    color: var(--text-muted);
+    font-style: italic;
+    font-size: 0.8rem;
+  }
+
+  /* ── Search ── */
+  #search {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0.3rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    width: 180px;
+    font-family: var(--font-sans);
+    outline: none;
+  }
+  #search:focus { border-color: var(--accent); }
+  #search::placeholder { color: var(--text-muted); opacity: 0.5; }
+
+  mark {
+    background: rgba(245,158,11,0.3);
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 2px;
+  }
+
+  /* ── Expand/Collapse All ── */
+  .toggle-all-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    font-family: var(--font-sans);
+  }
+  .toggle-all-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ── Responsive ── */
+  @media (max-width: 640px) {
+    #toolbar { padding: 0.5rem 0.8rem; }
+    #messages { padding: 1rem 0.5rem 3rem; }
+    .content-block { padding: 0.6rem 0.8rem; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Drop Zone ── -->
+<div id="drop-zone">
+  <h1>Claude Transcript Viewer</h1>
+  <p>Parse and explore Claude compaction transcript JSONL files</p>
+  <div class="drop-area" id="drop-area">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
+    <div class="label">Drop a .jsonl file here</div>
+    <div class="sub">or click to browse</div>
+  </div>
+  <input type="file" id="file-input" accept=".jsonl,.json,.txt">
+</div>
+
+<!-- ── Viewer ── -->
+<div id="viewer">
+  <div id="toolbar">
+    <span class="filename" id="filename"></span>
+    <input type="text" id="search" placeholder="Search...">
+    <button class="filter-btn active" data-role="all">All</button>
+    <button class="filter-btn" data-role="user-text">User Text</button>
+    <button class="filter-btn" data-role="user">User (all)</button>
+    <button class="filter-btn" data-role="assistant">Assistant</button>
+    <button class="filter-btn" data-role="system">System</button>
+    <button class="filter-btn" data-role="tool">Tools</button>
+    <button class="toggle-all-btn" id="btn-expand">Expand All</button>
+    <button class="toggle-all-btn" id="btn-collapse">Collapse All</button>
+    <span class="stat" id="stat-messages"></span>
+    <span class="stat" id="stat-tokens"></span>
+    <button id="btn-reset">New File</button>
+  </div>
+  <div id="messages"></div>
+</div>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const $$ = s => document.querySelectorAll(s);
+
+  // ── File Loading ──
+  const dropZone = $('#drop-zone');
+  const dropArea = $('#drop-area');
+  const fileInput = $('#file-input');
+  const viewer = $('#viewer');
+
+  dropArea.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', e => { if (e.target.files[0]) loadFile(e.target.files[0]); });
+
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+  });
+
+  $('#btn-reset').addEventListener('click', () => {
+    viewer.style.display = 'none';
+    dropZone.style.display = 'flex';
+    $('#messages').innerHTML = '';
+    fileInput.value = '';
+  });
+
+  function loadFile(file) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const lines = e.target.result.trim().split('\n');
+      const entries = [];
+      for (const line of lines) {
+        try { entries.push(JSON.parse(line)); } catch {}
+      }
+      if (!entries.length) { alert('No valid JSON lines found.'); return; }
+      $('#filename').textContent = file.name;
+      render(entries);
+      dropZone.style.display = 'none';
+      viewer.style.display = 'block';
+    };
+    reader.readAsText(file);
+  }
+
+  // ── Rendering ──
+  function render(entries) {
+    const container = $('#messages');
+    container.innerHTML = '';
+
+    let msgCount = 0;
+    let totalTokens = 0;
+    let hasToolContent = false;
+
+    for (const entry of entries) {
+      // Handle different JSONL structures
+      const messages = extractMessages(entry);
+      for (const msg of messages) {
+        // Check for compaction marker
+        if (isCompaction(msg)) {
+          container.appendChild(createCompactionDivider(msg));
+          continue;
+        }
+
+        const el = createMessageEl(msg, msgCount);
+        container.appendChild(el);
+        msgCount++;
+
+        if (msg.role === 'assistant' && msg.usage) {
+          totalTokens += (msg.usage.input_tokens || 0) + (msg.usage.output_tokens || 0);
+        }
+        if (hasToolBlocks(msg)) hasToolContent = true;
+      }
+
+      // Track usage from top-level
+      if (entry.usage) {
+        totalTokens += (entry.usage.input_tokens || 0) + (entry.usage.output_tokens || 0);
+      }
+    }
+
+    $('#stat-messages').textContent = `${msgCount} messages`;
+    $('#stat-tokens').textContent = totalTokens > 0 ? `~${(totalTokens/1000).toFixed(1)}K tokens` : '';
+  }
+
+  function extractMessages(entry) {
+    // Direct message object with role
+    if (entry.role) return [entry];
+    // Array of messages
+    if (Array.isArray(entry)) return entry;
+    // Nested under 'messages'
+    if (entry.messages && Array.isArray(entry.messages)) return entry.messages;
+    // Conversation turn with 'message'
+    if (entry.message && entry.message.role) return [entry.message];
+    // API response wrapping
+    if (entry.type === 'message' && entry.content) return [entry];
+    // Wrap as-is
+    return [entry];
+  }
+
+  function isCompaction(msg) {
+    if (msg.type === 'compaction' || msg.event === 'compaction') return true;
+    if (typeof msg.content === 'string' && msg.content.includes('[COMPACTION]')) return true;
+    if (Array.isArray(msg.content)) {
+      return msg.content.some(b =>
+        (b.type === 'text' && typeof b.text === 'string' && b.text.includes('[COMPACTION]')) ||
+        b.type === 'compaction'
+      );
+    }
+    return false;
+  }
+
+  function hasToolBlocks(msg) {
+    if (!Array.isArray(msg.content)) return false;
+    return msg.content.some(b => b.type === 'tool_use' || b.type === 'tool_result');
+  }
+
+  function hasTextBlocks(msg) {
+    if (typeof msg.content === 'string') return true;
+    if (!Array.isArray(msg.content)) return false;
+    return msg.content.some(b => b.type === 'text' && b.text && b.text.trim());
+  }
+
+  function createCompactionDivider(msg) {
+    const div = document.createElement('div');
+    div.className = 'compaction-divider';
+
+    let summary = 'Context Compacted';
+    if (typeof msg.content === 'string') {
+      const clean = msg.content.replace('[COMPACTION]', '').trim();
+      if (clean) summary = clean.slice(0, 80);
+    } else if (Array.isArray(msg.content)) {
+      for (const b of msg.content) {
+        if (b.type === 'text' && b.text) {
+          const clean = b.text.replace('[COMPACTION]', '').trim();
+          if (clean) { summary = clean.slice(0, 80); break; }
+        }
+      }
+    }
+
+    div.innerHTML = `<span class="icon">&#x26A1;</span> ${escapeHtml(summary)}`;
+    return div;
+  }
+
+  function createMessageEl(msg, idx) {
+    const role = msg.role || 'unknown';
+    const div = document.createElement('div');
+    div.className = `message role-${role}`;
+    div.dataset.role = role;
+    div.dataset.idx = idx;
+    div.dataset.hasTools = hasToolBlocks(msg) ? '1' : '0';
+    div.dataset.hasText = hasTextBlocks(msg) ? '1' : '0';
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'msg-header';
+    header.innerHTML = `
+      <span class="collapse-icon">&#x25BC;</span>
+      <span class="role-badge">${escapeHtml(role)}</span>
+      <span style="font-size:0.78rem;color:var(--text-muted)">${contentSummary(msg)}</span>
+      <span class="msg-meta">
+        ${msg.model ? `<span style="font-size:0.7rem;opacity:0.5">${escapeHtml(msg.model)}</span>` : ''}
+        ${msg.usage ? `<span class="token-count">${formatUsage(msg.usage)}</span>` : ''}
+        <span style="font-size:0.7rem;opacity:0.4">#${idx}</span>
+      </span>
+    `;
+    header.addEventListener('click', () => div.classList.toggle('collapsed'));
+    div.appendChild(header);
+
+    // Body
+    const body = document.createElement('div');
+    body.className = 'msg-body';
+
+    const content = msg.content;
+    if (typeof content === 'string') {
+      body.appendChild(createTextBlock(content, 'text'));
+    } else if (Array.isArray(content)) {
+      for (const block of content) {
+        body.appendChild(createContentBlock(block));
+      }
+    } else if (content && typeof content === 'object') {
+      body.appendChild(createTextBlock(JSON.stringify(content, null, 2), 'data'));
+    } else {
+      // Show any other properties
+      const rest = { ...msg };
+      delete rest.role;
+      delete rest.content;
+      if (Object.keys(rest).length) {
+        body.appendChild(createTextBlock(JSON.stringify(rest, null, 2), 'metadata'));
+      }
+    }
+
+    div.appendChild(body);
+    return div;
+  }
+
+  function createContentBlock(block) {
+    if (!block || typeof block !== 'object') {
+      return createTextBlock(String(block), 'text');
+    }
+
+    switch (block.type) {
+      case 'text':
+        return createTextBlock(block.text || '', 'text');
+
+      case 'thinking':
+        return createTextBlock(block.thinking || block.text || '', 'thinking');
+
+      case 'tool_use':
+        return createToolUseBlock(block);
+
+      case 'tool_result':
+        return createToolResultBlock(block);
+
+      case 'image':
+        return createImageBlock(block);
+
+      default:
+        return createTextBlock(JSON.stringify(block, null, 2), block.type || 'unknown');
+    }
+  }
+
+  function createTextBlock(text, type) {
+    const div = document.createElement('div');
+    div.className = `content-block block-${type}`;
+    div.dataset.blockType = type;
+    const isLong = text.length > 2000;
+    div.innerHTML = `
+      <div class="block-label">${typeIcon(type)} ${escapeHtml(type)}</div>
+      <div class="block-content${isLong ? ' long' : ''}" data-searchable>${escapeHtml(text)}</div>
+    `;
+    return div;
+  }
+
+  function createToolUseBlock(block) {
+    const div = document.createElement('div');
+    div.className = 'content-block block-tool-use';
+    div.dataset.blockType = 'tool_use';
+    const inputStr = typeof block.input === 'string'
+      ? block.input
+      : JSON.stringify(block.input, null, 2);
+    const isLong = inputStr.length > 1500;
+    div.innerHTML = `
+      <div class="block-label">${typeIcon('tool_use')} Tool Call</div>
+      <div class="tool-name" data-searchable>${escapeHtml(block.name || 'unknown')}</div>
+      ${block.id ? `<div style="font-size:0.65rem;color:var(--text-muted);font-family:var(--font-mono);margin-top:2px">${escapeHtml(block.id)}</div>` : ''}
+      <div class="tool-input${isLong ? ' long' : ''}" data-searchable>${escapeHtml(inputStr)}</div>
+    `;
+    return div;
+  }
+
+  function createToolResultBlock(block) {
+    const div = document.createElement('div');
+    const isError = block.is_error;
+    div.className = `content-block block-tool-result${isError ? ' block-error' : ''}`;
+    div.dataset.blockType = 'tool_result';
+
+    let contentHtml = '';
+    if (typeof block.content === 'string') {
+      const isLong = block.content.length > 2000;
+      contentHtml = `<div class="block-content${isLong ? ' long' : ''}" data-searchable>${escapeHtml(block.content)}</div>`;
+    } else if (Array.isArray(block.content)) {
+      for (const sub of block.content) {
+        if (sub.type === 'text') {
+          const isLong = (sub.text || '').length > 2000;
+          contentHtml += `<div class="block-content${isLong ? ' long' : ''}" data-searchable>${escapeHtml(sub.text || '')}</div>`;
+        } else if (sub.type === 'image') {
+          contentHtml += `<div class="base64-placeholder">[Image: ${sub.source?.media_type || 'image'}]</div>`;
+        } else {
+          contentHtml += `<div class="block-content" data-searchable>${escapeHtml(JSON.stringify(sub, null, 2))}</div>`;
+        }
+      }
+    } else if (block.content) {
+      contentHtml = `<div class="block-content" data-searchable>${escapeHtml(JSON.stringify(block.content, null, 2))}</div>`;
+    }
+
+    div.innerHTML = `
+      <div class="block-label">${typeIcon(isError ? 'error' : 'tool_result')} ${isError ? 'Tool Error' : 'Tool Result'}${block.tool_use_id ? ` <span style="font-weight:400;opacity:0.5;font-size:0.6rem">${escapeHtml(block.tool_use_id)}</span>` : ''}</div>
+      ${contentHtml}
+    `;
+    return div;
+  }
+
+  function createImageBlock(block) {
+    const div = document.createElement('div');
+    div.className = 'content-block image-block';
+    div.dataset.blockType = 'image';
+    if (block.source?.type === 'base64') {
+      div.innerHTML = `
+        <div class="block-label">${typeIcon('image')} Image</div>
+        <img src="data:${block.source.media_type || 'image/png'};base64,${block.source.data}" alt="embedded image">
+      `;
+    } else {
+      div.innerHTML = `
+        <div class="block-label">${typeIcon('image')} Image</div>
+        <div class="base64-placeholder">[Image reference: ${escapeHtml(JSON.stringify(block.source || {}))}]</div>
+      `;
+    }
+    return div;
+  }
+
+  // ── Helpers ──
+  function typeIcon(type) {
+    const icons = {
+      text: '&#x1F4AC;',
+      thinking: '&#x1F9E0;',
+      tool_use: '&#x1F527;',
+      tool_result: '&#x1F4E5;',
+      error: '&#x26A0;',
+      image: '&#x1F5BC;',
+    };
+    return `<span style="font-size:0.85rem">${icons[type] || '&#x25CF;'}</span>`;
+  }
+
+  function contentSummary(msg) {
+    if (typeof msg.content === 'string') {
+      return truncate(msg.content, 60);
+    }
+    if (Array.isArray(msg.content)) {
+      const types = {};
+      for (const b of msg.content) { types[b.type] = (types[b.type] || 0) + 1; }
+      return Object.entries(types).map(([t,c]) => `${c} ${t}`).join(', ');
+    }
+    return '';
+  }
+
+  function formatUsage(u) {
+    const parts = [];
+    if (u.input_tokens) parts.push(`in:${(u.input_tokens/1000).toFixed(1)}K`);
+    if (u.output_tokens) parts.push(`out:${(u.output_tokens/1000).toFixed(1)}K`);
+    if (u.cache_read_input_tokens) parts.push(`cache:${(u.cache_read_input_tokens/1000).toFixed(1)}K`);
+    return parts.join(' ');
+  }
+
+  function truncate(s, n) {
+    if (!s) return '';
+    const clean = s.replace(/\s+/g, ' ').trim();
+    return clean.length > n ? clean.slice(0, n) + '...' : clean;
+  }
+
+  function escapeHtml(s) {
+    if (!s) return '';
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // ── Filtering ──
+  $$('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      $$('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      applyFilters();
+    });
+  });
+
+  function applyFilters() {
+    const role = document.querySelector('.filter-btn.active')?.dataset.role || 'all';
+    const search = $('#search').value.toLowerCase();
+    const isUserText = role === 'user-text';
+
+    // Reset block visibility
+    $$('.content-block').forEach(b => b.style.display = '');
+
+    $$('.message').forEach(el => {
+      let show = true;
+
+      // Role filter
+      if (role !== 'all') {
+        if (role === 'user-text') {
+          show = el.dataset.role === 'user' && el.dataset.hasText === '1';
+        } else if (role === 'tool') {
+          show = el.dataset.hasTools === '1';
+        } else {
+          show = el.dataset.role === role;
+        }
+      }
+
+      // For user-text mode, hide non-text content blocks within shown messages
+      if (show && isUserText) {
+        el.querySelectorAll('.content-block').forEach(b => {
+          const bt = b.dataset.blockType;
+          b.style.display = (bt === 'text') ? '' : 'none';
+        });
+      }
+
+      // Search filter
+      if (show && search) {
+        const searchables = el.querySelectorAll('[data-searchable]');
+        let found = false;
+        searchables.forEach(s => {
+          // Remove old marks
+          s.innerHTML = escapeHtml(s.textContent);
+          if (s.textContent.toLowerCase().includes(search)) {
+            found = true;
+            // Highlight matches
+            const regex = new RegExp(`(${escapeRegex(search)})`, 'gi');
+            s.innerHTML = escapeHtml(s.textContent).replace(regex, '<mark>$1</mark>');
+          }
+        });
+        show = found;
+      } else if (!search) {
+        // Clear highlights
+        el.querySelectorAll('[data-searchable] mark').forEach(m => {
+          m.replaceWith(document.createTextNode(m.textContent));
+        });
+      }
+
+      el.classList.toggle('hidden', !show);
+    });
+  }
+
+  function escapeRegex(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  let searchTimer;
+  $('#search').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(applyFilters, 200);
+  });
+
+  // ── Collapse/Expand All ──
+  $('#btn-expand').addEventListener('click', () => {
+    $$('.message').forEach(el => el.classList.remove('collapsed'));
+  });
+  $('#btn-collapse').addEventListener('click', () => {
+    $$('.message').forEach(el => el.classList.add('collapsed'));
+  });
+
+  // ── Keyboard shortcuts ──
+  document.addEventListener('keydown', e => {
+    if (e.key === '/' && !e.ctrlKey && !e.metaKey && document.activeElement !== $('#search')) {
+      e.preventDefault();
+      $('#search').focus();
+    }
+    if (e.key === 'Escape') {
+      $('#search').blur();
+      $('#search').value = '';
+      applyFilters();
+    }
+  });
+})();
+</script>
+</body>
+</html>
